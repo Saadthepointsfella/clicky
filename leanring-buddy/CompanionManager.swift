@@ -138,6 +138,14 @@ final class CompanionManager: ObservableObject {
         }
     }
 
+    /// Opt-in local learning memory. Defaults off until the user enables it.
+    @Published var isClicksEnabled: Bool = UserDefaults.standard.bool(forKey: "isClicksEnabled")
+
+    func setClicksEnabled(_ enabled: Bool) {
+        isClicksEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: "isClicksEnabled")
+    }
+
     /// Whether the user has completed onboarding at least once. Persisted
     /// to UserDefaults so the Start button only appears on first launch.
     var hasCompletedOnboarding: Bool {
