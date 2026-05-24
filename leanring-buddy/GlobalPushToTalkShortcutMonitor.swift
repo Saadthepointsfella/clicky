@@ -8,12 +8,18 @@
 //
 
 import AppKit
+import Carbon
 import Combine
 import CoreGraphics
 import Foundation
 
 final class GlobalPushToTalkShortcutMonitor: ObservableObject {
     let shortcutTransitionPublisher = PassthroughSubject<BuddyPushToTalkShortcut.ShortcutTransition, Never>()
+
+    private enum ActiveShortcutSource {
+        case eventTap
+        case carbonHotKey
+    }
 
     private let eventTapStateLock = NSLock()
     private var eventTapThread: Thread?
@@ -26,6 +32,11 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
     /// Mutated exclusively from the CGEvent tap callback on the event tap
     /// thread. The published mirror below is updated on the main queue.
     private var eventTapThreadIsShortcutCurrentlyPressed = false
+    private var activeShortcutSource: ActiveShortcutSource?
+    private var carbonFallbackHotKeyRef: EventHotKeyRef?
+    private var carbonFallbackEventHandlerRef: EventHandlerRef?
+    private let carbonFallbackHotKeySignature: OSType = 0x436C_4B79 // "ClKy"
+    private let carbonFallbackHotKeyIdentifier: UInt32 = 1
     /// Published so the overlay can hide immediately on key release without
     /// waiting for the async dictation state pipeline to catch up.
     @Published private(set) var isShortcutCurrentlyPressed = false
@@ -35,6 +46,8 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
     }
 
     func start() {
+        registerCarbonFallbackHotKeyIfNeeded()
+
         eventTapStateLock.lock()
         guard eventTapThread == nil else {
             eventTapStateLock.unlock()
@@ -54,6 +67,7 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
     }
 
     func stop() {
+        unregisterCarbonFallbackHotKey()
         updatePublishedShortcutPressedState(false)
 
         eventTapStateLock.lock()
@@ -65,6 +79,7 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
         globalEventTap = nil
         eventTapRunLoop = nil
         eventTapThreadIsShortcutCurrentlyPressed = false
+        activeShortcutSource = nil
         consecutiveDisabledEventCount = 0
         eventTapStateLock.unlock()
 
@@ -87,6 +102,7 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
 
         eventTapStateLock.lock()
         eventTapThreadIsShortcutCurrentlyPressed = false
+        activeShortcutSource = nil
         consecutiveDisabledEventCount = 0
         let existingEventTap = globalEventTap
         eventTapStateLock.unlock()
@@ -140,6 +156,9 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
                 shouldStopEventTapThread = false
             }
             eventTapThreadIsShortcutCurrentlyPressed = false
+            if activeShortcutSource == .eventTap {
+                activeShortcutSource = nil
+            }
             consecutiveDisabledEventCount = 0
             eventTapStateLock.unlock()
 
@@ -238,6 +257,130 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
 
         DispatchQueue.main.async { [weak self] in
             self?.isShortcutCurrentlyPressed = isPressed
+        }
+    }
+
+    private func registerCarbonFallbackHotKeyIfNeeded() {
+        eventTapStateLock.lock()
+        let isAlreadyRegistered = carbonFallbackHotKeyRef != nil || carbonFallbackEventHandlerRef != nil
+        eventTapStateLock.unlock()
+
+        guard !isAlreadyRegistered else { return }
+
+        let eventTypes = [
+            EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed)),
+            EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyReleased)),
+        ]
+
+        var eventHandlerRef: EventHandlerRef?
+        let installStatus = eventTypes.withUnsafeBufferPointer { eventTypesBufferPointer in
+            InstallEventHandler(
+                GetApplicationEventTarget(),
+                { _, event, userData in
+                    guard let event, let userData else { return noErr }
+                    let shortcutMonitor = Unmanaged<GlobalPushToTalkShortcutMonitor>
+                        .fromOpaque(userData)
+                        .takeUnretainedValue()
+                    shortcutMonitor.handleCarbonFallbackHotKeyEvent(event)
+                    return noErr
+                },
+                eventTypesBufferPointer.count,
+                eventTypesBufferPointer.baseAddress,
+                Unmanaged.passUnretained(self).toOpaque(),
+                &eventHandlerRef
+            )
+        }
+
+        guard installStatus == noErr, let eventHandlerRef else {
+            print("⚠️ Carbon fallback hotkey handler registration failed")
+            return
+        }
+
+        var hotKeyRef: EventHotKeyRef?
+        let hotKeyIdentifier = EventHotKeyID(
+            signature: carbonFallbackHotKeySignature,
+            id: carbonFallbackHotKeyIdentifier
+        )
+        let registerStatus = RegisterEventHotKey(
+            UInt32(kVK_Space),
+            UInt32(controlKey | optionKey),
+            hotKeyIdentifier,
+            GetApplicationEventTarget(),
+            0,
+            &hotKeyRef
+        )
+
+        guard registerStatus == noErr, let hotKeyRef else {
+            RemoveEventHandler(eventHandlerRef)
+            print("⚠️ Carbon fallback hotkey registration failed")
+            return
+        }
+
+        eventTapStateLock.lock()
+        carbonFallbackEventHandlerRef = eventHandlerRef
+        carbonFallbackHotKeyRef = hotKeyRef
+        eventTapStateLock.unlock()
+
+        print("⌨️ Carbon fallback hotkey registered")
+    }
+
+    private func unregisterCarbonFallbackHotKey() {
+        eventTapStateLock.lock()
+        let hotKeyRefToUnregister = carbonFallbackHotKeyRef
+        let eventHandlerRefToRemove = carbonFallbackEventHandlerRef
+        carbonFallbackHotKeyRef = nil
+        carbonFallbackEventHandlerRef = nil
+        if activeShortcutSource == .carbonHotKey {
+            activeShortcutSource = nil
+        }
+        eventTapStateLock.unlock()
+
+        if let hotKeyRefToUnregister {
+            UnregisterEventHotKey(hotKeyRefToUnregister)
+        }
+
+        if let eventHandlerRefToRemove {
+            RemoveEventHandler(eventHandlerRefToRemove)
+        }
+    }
+
+    private func handleCarbonFallbackHotKeyEvent(_ event: EventRef) {
+        switch GetEventKind(event) {
+        case UInt32(kEventHotKeyPressed):
+            publishCarbonFallbackTransition(.pressed)
+        case UInt32(kEventHotKeyReleased):
+            publishCarbonFallbackTransition(.released)
+        default:
+            break
+        }
+    }
+
+    private func publishCarbonFallbackTransition(_ shortcutTransition: BuddyPushToTalkShortcut.ShortcutTransition) {
+        eventTapStateLock.lock()
+        defer { eventTapStateLock.unlock() }
+
+        switch shortcutTransition {
+        case .pressed:
+            if activeShortcutSource == .eventTap {
+                activeShortcutSource = .carbonHotKey
+                eventTapThreadIsShortcutCurrentlyPressed = true
+                print("⌨️ Carbon fallback hotkey pressed")
+                return
+            }
+
+            guard activeShortcutSource == nil else { return }
+            activeShortcutSource = .carbonHotKey
+            eventTapThreadIsShortcutCurrentlyPressed = true
+            print("⌨️ Carbon fallback hotkey pressed")
+            publishShortcutTransitionOnMain(.pressed, shortcutIsCurrentlyPressed: true)
+        case .released:
+            guard activeShortcutSource == .carbonHotKey else { return }
+            activeShortcutSource = nil
+            eventTapThreadIsShortcutCurrentlyPressed = false
+            print("⌨️ Carbon fallback hotkey released")
+            publishShortcutTransitionOnMain(.released, shortcutIsCurrentlyPressed: false)
+        case .none:
+            break
         }
     }
 
@@ -340,6 +483,20 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
         shortcutIsCurrentlyPressed: Bool,
         modifierFlagsRawValue: UInt64
     ) {
+        eventTapStateLock.lock()
+        defer { eventTapStateLock.unlock() }
+
+        switch shortcutTransition {
+        case .pressed:
+            guard activeShortcutSource == nil else { return }
+            activeShortcutSource = .eventTap
+        case .released:
+            guard activeShortcutSource == .eventTap else { return }
+            activeShortcutSource = nil
+        case .none:
+            break
+        }
+
         eventTapThreadIsShortcutCurrentlyPressed = shortcutIsCurrentlyPressed
         let transitionDescription: String
         switch shortcutTransition {
@@ -352,6 +509,13 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
         }
         print("⌨️ Push-to-talk monitor emitted \(transitionDescription); modifiersRaw=\(modifierFlagsRawValue)")
 
+        publishShortcutTransitionOnMain(shortcutTransition, shortcutIsCurrentlyPressed: shortcutIsCurrentlyPressed)
+    }
+
+    private func publishShortcutTransitionOnMain(
+        _ shortcutTransition: BuddyPushToTalkShortcut.ShortcutTransition,
+        shortcutIsCurrentlyPressed: Bool
+    ) {
         DispatchQueue.main.async { [weak self] in
             self?.isShortcutCurrentlyPressed = shortcutIsCurrentlyPressed
             self?.shortcutTransitionPublisher.send(shortcutTransition)
@@ -359,16 +523,39 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
     }
 
     private func recoverEventTapAfterDisable() {
+        var shouldUpdatePublishedPressedState = false
+        var eventTapToReEnable: CFMachPort?
+        var shouldRecreateEventTap = false
+
+        eventTapStateLock.lock()
         consecutiveDisabledEventCount += 1
-        eventTapThreadIsShortcutCurrentlyPressed = false
-        updatePublishedShortcutPressedState(false)
+        if activeShortcutSource != .carbonHotKey {
+            eventTapThreadIsShortcutCurrentlyPressed = false
+            if activeShortcutSource == .eventTap {
+                activeShortcutSource = nil
+            }
+            shouldUpdatePublishedPressedState = true
+        }
 
         if consecutiveDisabledEventCount == 1, let globalEventTap, CFMachPortIsValid(globalEventTap) {
+            eventTapToReEnable = globalEventTap
+        } else {
+            shouldRecreateEventTap = true
+        }
+        eventTapStateLock.unlock()
+
+        if shouldUpdatePublishedPressedState {
+            updatePublishedShortcutPressedState(false)
+        }
+
+        if let eventTapToReEnable {
             print("⌨️ Push-to-talk event tap disabled; re-enabling")
-            CGEvent.tapEnable(tap: globalEventTap, enable: true)
+            CGEvent.tapEnable(tap: eventTapToReEnable, enable: true)
             return
         }
 
-        recreateEventTapOnEventTapThread()
+        if shouldRecreateEventTap {
+            recreateEventTapOnEventTapThread()
+        }
     }
 }
