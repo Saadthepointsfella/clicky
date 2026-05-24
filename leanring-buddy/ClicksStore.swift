@@ -58,4 +58,10 @@ struct ClicksStore {
         let data = try encoder.encode(graph)
         try data.write(to: graphFileURL, options: [.atomic])
     }
+
+    func appendNode(_ node: ClicksLearningNode) throws {
+        var graph = loadGraph()
+        graph.nodes.append(node)
+        try saveGraph(graph)
+    }
 }

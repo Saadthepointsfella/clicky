@@ -10,7 +10,12 @@ import SwiftUI
 
 @MainActor
 final class ClicksGraphWindowManager {
+    private let clicksStore: ClicksStore
     private var panel: NSPanel?
+
+    init(clicksStore: ClicksStore) {
+        self.clicksStore = clicksStore
+    }
 
     func showWindow() {
         if panel == nil {
@@ -24,7 +29,7 @@ final class ClicksGraphWindowManager {
     }
 
     private func makePanel() -> NSPanel {
-        let contentView = ClicksEmptyView()
+        let contentView = ClicksEmptyView(clicksStore: clicksStore)
         let hostingView = NSHostingView(rootView: contentView)
 
         let clicksPanel = NSPanel(

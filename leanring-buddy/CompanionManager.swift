@@ -7,6 +7,7 @@
 //  exposes observable voice state for the panel UI.
 //
 
+import AppKit
 import AVFoundation
 import Combine
 import Foundation
@@ -66,7 +67,8 @@ final class CompanionManager: ObservableObject {
     let globalPushToTalkShortcutMonitor = GlobalPushToTalkShortcutMonitor()
     let overlayWindowManager = OverlayWindowManager()
     let responseOverlayManager = CompanionResponseOverlayManager()
-    private let clicksGraphWindowManager = ClicksGraphWindowManager()
+    private let clicksStore = ClicksStore()
+    private lazy var clicksGraphWindowManager = ClicksGraphWindowManager(clicksStore: clicksStore)
 
     /// Base URL for the Cloudflare Worker proxy. All API requests route
     /// through this so keys never ship in the app binary.
@@ -716,6 +718,10 @@ final class CompanionManager: ObservableObject {
 
                 // Text response is shown via the streaming overlay — no TTS needed
                 voiceState = .responding
+                saveDeterministicClickIfNeeded(
+                    userTranscript: transcript,
+                    assistantResponse: spokenText
+                )
             } catch is CancellationError {
                 // User spoke again — response was interrupted
             } catch {
@@ -728,6 +734,46 @@ final class CompanionManager: ObservableObject {
                 scheduleTransientHideIfNeeded()
             }
         }
+    }
+
+    private func saveDeterministicClickIfNeeded(
+        userTranscript: String,
+        assistantResponse: String
+    ) {
+        guard isClicksEnabled else { return }
+
+        let trimmedUserTranscript = userTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedAssistantResponse = assistantResponse.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        guard !trimmedUserTranscript.isEmpty else { return }
+        guard !trimmedAssistantResponse.isEmpty else { return }
+
+        let node = ClicksLearningNode(
+            id: UUID(),
+            createdAt: Date(),
+            sourceApp: NSWorkspace.shared.frontmostApplication?.localizedName ?? "Unknown App",
+            userIntent: Self.cappedClicksText(trimmedUserTranscript, maxCharacters: 240),
+            caption: Self.cappedClicksText(trimmedUserTranscript, maxCharacters: 80),
+            learning: Self.cappedClicksText(trimmedAssistantResponse, maxCharacters: 240),
+            confidence: 0.5,
+            tags: [],
+            domain: nil
+        )
+
+        do {
+            try clicksStore.appendNode(node)
+        } catch {
+            print("⚠️ Clicks: failed to save deterministic node: \(error.localizedDescription)")
+        }
+    }
+
+    private static func cappedClicksText(_ text: String, maxCharacters: Int) -> String {
+        let trimmedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmedText.count > maxCharacters else {
+            return trimmedText
+        }
+
+        return String(trimmedText.prefix(maxCharacters)).trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     /// If the cursor is in transient mode (user toggled "Show Clicky" off),
