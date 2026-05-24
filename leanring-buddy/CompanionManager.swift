@@ -68,7 +68,11 @@ final class CompanionManager: ObservableObject {
     let overlayWindowManager = OverlayWindowManager()
     let responseOverlayManager = CompanionResponseOverlayManager()
     private let clicksStore = ClicksStore()
-    private lazy var clicksGraphWindowManager = ClicksGraphWindowManager(clicksStore: clicksStore)
+    private lazy var clicksLearningExtractor = ClicksLearningExtractor(claudeAPI: claudeAPI)
+    private lazy var clicksGraphWindowManager = ClicksGraphWindowManager(
+        clicksStore: clicksStore,
+        clicksLearningExtractor: clicksLearningExtractor
+    )
 
     /// Base URL for the Cloudflare Worker proxy. All API requests route
     /// through this so keys never ship in the app binary.

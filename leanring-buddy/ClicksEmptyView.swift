@@ -9,10 +9,14 @@ import SwiftUI
 
 struct ClicksEmptyView: View {
     let clicksStore: ClicksStore
+    let clicksLearningExtractor: ClicksLearningExtractor
     @State private var graph: ClicksMemoryGraph
+    @State private var isImprovingLatestClick = false
+    @State private var improveLatestClickStatus: String?
 
-    init(clicksStore: ClicksStore) {
+    init(clicksStore: ClicksStore, clicksLearningExtractor: ClicksLearningExtractor) {
         self.clicksStore = clicksStore
+        self.clicksLearningExtractor = clicksLearningExtractor
         self._graph = State(initialValue: clicksStore.loadGraph())
     }
 
@@ -61,6 +65,27 @@ struct ClicksEmptyView: View {
 
             Spacer()
 
+            if !graph.nodes.isEmpty {
+                Button(action: improveLatestClick) {
+                    Text(isImprovingLatestClick ? "Improving..." : "Improve latest Click")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(isImprovingLatestClick ? Self.inkFaint : Self.inkSoft)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 7)
+                        .background(
+                            Capsule()
+                                .fill(Self.card)
+                        )
+                        .overlay(
+                            Capsule()
+                                .stroke(Self.cardEdge, lineWidth: 1)
+                        )
+                }
+                .buttonStyle(.plain)
+                .disabled(isImprovingLatestClick)
+                .pointerCursor()
+            }
+
             Button(action: refreshGraph) {
                 Text("Refresh")
                     .font(.system(size: 12, weight: .semibold))
@@ -78,6 +103,14 @@ struct ClicksEmptyView: View {
             }
             .buttonStyle(.plain)
             .pointerCursor()
+        }
+        .overlay(alignment: .bottomTrailing) {
+            if let improveLatestClickStatus {
+                Text(improveLatestClickStatus)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(Self.inkFaint)
+                    .offset(y: 20)
+            }
         }
     }
 
@@ -121,6 +154,65 @@ struct ClicksEmptyView: View {
 
     private func refreshGraph() {
         graph = clicksStore.loadGraph()
+    }
+
+    private func improveLatestClick() {
+        guard !isImprovingLatestClick else { return }
+        guard let latestNode = graph.nodes.sorted(by: { $0.createdAt > $1.createdAt }).first else {
+            return
+        }
+
+        isImprovingLatestClick = true
+        improveLatestClickStatus = nil
+
+        let completedExchange = ClicksCompletedExchange(
+            userTranscript: latestNode.userIntent,
+            assistantResponse: latestNode.learning,
+            sourceApp: latestNode.sourceApp,
+            createdAt: latestNode.createdAt
+        )
+
+        Task {
+            let extractedNode = await clicksLearningExtractor.extractLearningNode(from: completedExchange)
+
+            guard let extractedNode else {
+                await MainActor.run {
+                    isImprovingLatestClick = false
+                    improveLatestClickStatus = "No stronger memory found."
+                }
+                return
+            }
+
+            let replacementNode = ClicksLearningNode(
+                id: latestNode.id,
+                createdAt: latestNode.createdAt,
+                sourceApp: extractedNode.sourceApp,
+                userIntent: extractedNode.userIntent,
+                caption: extractedNode.caption,
+                learning: extractedNode.learning,
+                confidence: extractedNode.confidence,
+                tags: extractedNode.tags,
+                domain: extractedNode.domain
+            )
+
+            do {
+                let didReplaceNode = try clicksStore.replaceNode(id: latestNode.id, with: replacementNode)
+                await MainActor.run {
+                    if didReplaceNode {
+                        refreshGraph()
+                        improveLatestClickStatus = "Latest Click improved."
+                    } else {
+                        improveLatestClickStatus = "Latest Click was not found."
+                    }
+                    isImprovingLatestClick = false
+                }
+            } catch {
+                await MainActor.run {
+                    improveLatestClickStatus = "Could not improve latest Click."
+                    isImprovingLatestClick = false
+                }
+            }
+        }
     }
 
     private static let ink = Color(red: 0.15, green: 0.14, blue: 0.12)

@@ -68,4 +68,17 @@ struct ClicksStore {
             try saveGraph(graph)
         }
     }
+
+    func replaceNode(id nodeId: UUID, with replacementNode: ClicksLearningNode) throws -> Bool {
+        try Self.appendQueue.sync {
+            var graph = loadGraph()
+            guard let nodeIndex = graph.nodes.firstIndex(where: { $0.id == nodeId }) else {
+                return false
+            }
+
+            graph.nodes[nodeIndex] = replacementNode
+            try saveGraph(graph)
+            return true
+        }
+    }
 }

@@ -11,10 +11,12 @@ import SwiftUI
 @MainActor
 final class ClicksGraphWindowManager {
     private let clicksStore: ClicksStore
+    private let clicksLearningExtractor: ClicksLearningExtractor
     private var panel: NSPanel?
 
-    init(clicksStore: ClicksStore) {
+    init(clicksStore: ClicksStore, clicksLearningExtractor: ClicksLearningExtractor) {
         self.clicksStore = clicksStore
+        self.clicksLearningExtractor = clicksLearningExtractor
     }
 
     func showWindow() {
@@ -29,7 +31,10 @@ final class ClicksGraphWindowManager {
     }
 
     private func makePanel() -> NSPanel {
-        let contentView = ClicksEmptyView(clicksStore: clicksStore)
+        let contentView = ClicksEmptyView(
+            clicksStore: clicksStore,
+            clicksLearningExtractor: clicksLearningExtractor
+        )
         let hostingView = NSHostingView(rootView: contentView)
 
         let clicksPanel = NSPanel(
