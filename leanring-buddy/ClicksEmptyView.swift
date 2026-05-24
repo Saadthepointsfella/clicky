@@ -247,6 +247,8 @@ private struct ClicksLearningNodeCard: View {
             }
 
             HStack(spacing: 8) {
+                metadataPill(axisText)
+
                 if !node.sourceApp.isEmpty {
                     metadataPill(node.sourceApp)
                 }
@@ -285,6 +287,19 @@ private struct ClicksLearningNodeCard: View {
 
     private var createdAtText: String {
         node.createdAt.formatted(date: .abbreviated, time: .shortened)
+    }
+
+    private var axisText: String {
+        switch node.axis {
+        case .thinking:
+            return "Thinking"
+        case .designing:
+            return "Designing"
+        case .doing:
+            return "Doing"
+        case nil:
+            return node.axisReason == "classification_failed" ? "Unclassified" : "Classifying..."
+        }
     }
 
     private func metadataPill(_ text: String) -> some View {

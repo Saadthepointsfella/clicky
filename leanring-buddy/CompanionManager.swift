@@ -831,23 +831,210 @@ final class CompanionManager: ObservableObject {
         guard !trimmedUserTranscript.isEmpty else { return }
         guard !trimmedAssistantResponse.isEmpty else { return }
 
+        let sourceApp = NSWorkspace.shared.frontmostApplication?.localizedName ?? "Unknown App"
+
         let node = ClicksLearningNode(
             id: UUID(),
             createdAt: Date(),
-            sourceApp: NSWorkspace.shared.frontmostApplication?.localizedName ?? "Unknown App",
+            sourceApp: sourceApp,
             userIntent: Self.cappedClicksText(trimmedUserTranscript, maxCharacters: 240),
             caption: Self.cappedClicksText(trimmedUserTranscript, maxCharacters: 80),
             learning: Self.cappedClicksText(trimmedAssistantResponse, maxCharacters: 240),
             confidence: 0.5,
             tags: [],
-            domain: nil
+            domain: nil,
+            axis: nil,
+            axisConfidence: nil,
+            axisReason: nil
         )
 
         do {
             try clicksStore.appendNode(node)
+            inferAxisWithClaudeIfNeeded(for: node)
         } catch {
             print("⚠️ Clicks: failed to save deterministic node: \(error.localizedDescription)")
         }
+    }
+
+    private func inferAxisWithClaudeIfNeeded(for node: ClicksLearningNode) {
+        guard isClicksEnabled else { return }
+
+        let nodeId = node.id
+        let userIntent = node.userIntent
+        let sourceApp = node.sourceApp
+
+        Task(priority: .background) { [claudeAPI, clicksStore] in
+            print("axis inference: started")
+
+            do {
+                let response = try await claudeAPI.analyzeImage(
+                    images: [],
+                    systemPrompt: Self.axisInferenceSystemPrompt,
+                    userPrompt: Self.axisInferenceUserPrompt(
+                        userIntent: userIntent,
+                        sourceApp: sourceApp
+                    )
+                )
+                print("axis inference: claude returned")
+
+                guard let axisInference = Self.parseAxisInferenceResponse(response.text) else {
+                    Self.markAxisInferenceFailed(nodeId: nodeId, clicksStore: clicksStore)
+                    print("axis inference: parse failed, leaving unclassified")
+                    return
+                }
+
+                print("axis inference: parsed ok, axis=\(axisInference.axis.rawValue)")
+                let didUpdateCard = try clicksStore.updateAxisFields(
+                    id: nodeId,
+                    axis: axisInference.axis,
+                    axisConfidence: axisInference.confidence,
+                    axisReason: axisInference.reason
+                )
+
+                if didUpdateCard {
+                    print("axis inference: card updated")
+                } else {
+                    Self.markAxisInferenceFailed(nodeId: nodeId, clicksStore: clicksStore)
+                    print("axis inference: skipped (invalid/failed), card left unclassified")
+                }
+            } catch {
+                Self.markAxisInferenceFailed(nodeId: nodeId, clicksStore: clicksStore)
+                print("axis inference: claude threw")
+                print("axis inference: skipped (invalid/failed), card left unclassified")
+            }
+        }
+    }
+
+    private static func markAxisInferenceFailed(
+        nodeId: UUID,
+        clicksStore: ClicksStore
+    ) {
+        do {
+            _ = try clicksStore.updateAxisFields(
+                id: nodeId,
+                axis: nil,
+                axisConfidence: nil,
+                axisReason: "classification_failed"
+            )
+        } catch {
+            print("axis inference: skipped (invalid/failed), card left unclassified")
+        }
+    }
+
+    private static let axisInferenceSystemPrompt = """
+    classify one saved Click into exactly one axis: thinking, designing, or doing.
+
+    use user intent as the primary signal. use source_app only as secondary corroboration.
+
+    return exactly one JSON object. no markdown. no code fence. no explanation.
+
+    allowed reason values:
+    intent_thinking, intent_designing, intent_doing, tool_thinking, tool_designing, tool_doing, intent_tool_aligned, intent_tool_conflict, unclear_default_thinking
+
+    expected JSON shape:
+    {"axis":"thinking","confidence":0.82,"reason":"intent_thinking"}
+    """
+
+    private static func axisInferenceUserPrompt(
+        userIntent: String,
+        sourceApp: String
+    ) -> String {
+        """
+        user_intent:
+        \(userIntent)
+
+        source_app:
+        \(sourceApp)
+        """
+    }
+
+    private static func parseAxisInferenceResponse(_ rawResponse: String) -> AxisInferenceResult? {
+        guard let jsonString = extractJSONObjectString(from: rawResponse),
+              let data = jsonString.data(using: .utf8) else {
+            return nil
+        }
+
+        guard let decodedResponse = try? JSONDecoder().decode(AxisInferenceResponse.self, from: data) else {
+            return nil
+        }
+
+        guard let axis = ClicksAxis(rawValue: decodedResponse.axis) else {
+            return nil
+        }
+
+        guard decodedResponse.confidence.isFinite,
+              (0.0...1.0).contains(decodedResponse.confidence) else {
+            return nil
+        }
+
+        let sanitizedReason = sanitizedAxisReason(decodedResponse.reason)
+        guard allowedAxisInferenceReasons.contains(sanitizedReason) else {
+            return nil
+        }
+
+        return AxisInferenceResult(
+            axis: axis,
+            confidence: decodedResponse.confidence,
+            reason: sanitizedReason
+        )
+    }
+
+    private static func extractJSONObjectString(from rawResponse: String) -> String? {
+        var trimmedResponse = rawResponse.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedResponse.isEmpty else { return nil }
+
+        if trimmedResponse.hasPrefix("```") {
+            trimmedResponse = trimmedResponse
+                .components(separatedBy: .newlines)
+                .dropFirst()
+                .joined(separator: "\n")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
+        if trimmedResponse.hasSuffix("```") {
+            trimmedResponse = String(trimmedResponse.dropLast(3))
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
+        guard let jsonStartIndex = trimmedResponse.firstIndex(of: "{"),
+              let jsonEndIndex = trimmedResponse.lastIndex(of: "}"),
+              jsonStartIndex <= jsonEndIndex else {
+            return nil
+        }
+
+        return String(trimmedResponse[jsonStartIndex...jsonEndIndex])
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func sanitizedAxisReason(_ reason: String) -> String {
+        let allowedCharacters = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-")
+        let trimmedReason = reason.trimmingCharacters(in: .whitespacesAndNewlines)
+        let sanitizedReasonScalars = trimmedReason.unicodeScalars.filter { allowedCharacters.contains($0) }
+        return String(String(String.UnicodeScalarView(sanitizedReasonScalars)).prefix(80))
+    }
+
+    private static let allowedAxisInferenceReasons: Set<String> = [
+        "intent_thinking",
+        "intent_designing",
+        "intent_doing",
+        "tool_thinking",
+        "tool_designing",
+        "tool_doing",
+        "intent_tool_aligned",
+        "intent_tool_conflict",
+        "unclear_default_thinking"
+    ]
+
+    private struct AxisInferenceResult {
+        let axis: ClicksAxis
+        let confidence: Double
+        let reason: String
+    }
+
+    private struct AxisInferenceResponse: Decodable {
+        let axis: String
+        let confidence: Double
+        let reason: String
     }
 
     private static func cappedClicksText(_ text: String, maxCharacters: Int) -> String {

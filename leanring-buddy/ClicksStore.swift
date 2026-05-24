@@ -81,4 +81,24 @@ struct ClicksStore {
             return true
         }
     }
+
+    func updateAxisFields(
+        id nodeId: UUID,
+        axis: ClicksAxis?,
+        axisConfidence: Double?,
+        axisReason: String?
+    ) throws -> Bool {
+        try Self.appendQueue.sync {
+            var graph = loadGraph()
+            guard let nodeIndex = graph.nodes.firstIndex(where: { $0.id == nodeId }) else {
+                return false
+            }
+
+            graph.nodes[nodeIndex].axis = axis
+            graph.nodes[nodeIndex].axisConfidence = axisConfidence
+            graph.nodes[nodeIndex].axisReason = axisReason
+            try saveGraph(graph)
+            return true
+        }
+    }
 }
