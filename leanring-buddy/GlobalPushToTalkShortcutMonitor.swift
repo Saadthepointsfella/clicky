@@ -15,10 +15,17 @@ import Foundation
 final class GlobalPushToTalkShortcutMonitor: ObservableObject {
     let shortcutTransitionPublisher = PassthroughSubject<BuddyPushToTalkShortcut.ShortcutTransition, Never>()
 
+    private let eventTapStateLock = NSLock()
+    private var eventTapThread: Thread?
+    private var eventTapThreadIdentifier: UUID?
+    private var eventTapRunLoop: CFRunLoop?
+    private var shouldStopEventTapThread = false
     private var globalEventTap: CFMachPort?
     private var globalEventTapRunLoopSource: CFRunLoopSource?
-    /// Mutated exclusively from the CGEvent tap callback, which runs on
-    /// `CFRunLoopGetMain()` and therefore always executes on the main thread.
+    private var consecutiveDisabledEventCount = 0
+    /// Mutated exclusively from the CGEvent tap callback on the event tap
+    /// thread. The published mirror below is updated on the main queue.
+    private var eventTapThreadIsShortcutCurrentlyPressed = false
     /// Published so the overlay can hide immediately on key release without
     /// waiting for the async dictation state pipeline to catch up.
     @Published private(set) var isShortcutCurrentlyPressed = false
@@ -28,15 +35,120 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
     }
 
     func start() {
-        // If the event tap is already running, don't restart it.
-        // Restarting resets isShortcutCurrentlyPressed, which would kill
-        // the waveform overlay mid-press when the permission poller calls
-        // refreshAllPermissions → start() every few seconds.
-        guard globalEventTap == nil else {
-            print("🔬 EventTap: start() called but tap already exists — skipping")
+        eventTapStateLock.lock()
+        guard eventTapThread == nil else {
+            eventTapStateLock.unlock()
             return
         }
-        print("🔬 EventTap: start() creating new event tap")
+        let newEventTapThreadIdentifier = UUID()
+        let newEventTapThread = Thread { [weak self] in
+            self?.runEventTapThread(identifier: newEventTapThreadIdentifier)
+        }
+        newEventTapThread.name = "ClickyPushToTalkEventTap"
+        eventTapThread = newEventTapThread
+        eventTapThreadIdentifier = newEventTapThreadIdentifier
+        shouldStopEventTapThread = false
+        eventTapStateLock.unlock()
+
+        newEventTapThread.start()
+    }
+
+    func stop() {
+        updatePublishedShortcutPressedState(false)
+
+        eventTapStateLock.lock()
+        let runLoopToStop = eventTapRunLoop
+        let runLoopSourceToRemove = globalEventTapRunLoopSource
+        let eventTapToInvalidate = globalEventTap
+        shouldStopEventTapThread = true
+        globalEventTapRunLoopSource = nil
+        globalEventTap = nil
+        eventTapRunLoop = nil
+        eventTapThreadIsShortcutCurrentlyPressed = false
+        consecutiveDisabledEventCount = 0
+        eventTapStateLock.unlock()
+
+        if let runLoopToStop, let runLoopSourceToRemove {
+            CFRunLoopRemoveSource(runLoopToStop, runLoopSourceToRemove, .commonModes)
+        }
+
+        if let eventTapToInvalidate {
+            CGEvent.tapEnable(tap: eventTapToInvalidate, enable: false)
+            CFMachPortInvalidate(eventTapToInvalidate)
+        }
+
+        if let runLoopToStop {
+            CFRunLoopStop(runLoopToStop)
+        }
+    }
+
+    func refreshEventTap() {
+        updatePublishedShortcutPressedState(false)
+
+        eventTapStateLock.lock()
+        eventTapThreadIsShortcutCurrentlyPressed = false
+        consecutiveDisabledEventCount = 0
+        let existingEventTap = globalEventTap
+        eventTapStateLock.unlock()
+
+        guard let existingEventTap else {
+            start()
+            return
+        }
+
+        guard CFMachPortIsValid(existingEventTap) else {
+            stop()
+            start()
+            return
+        }
+
+        CGEvent.tapEnable(tap: existingEventTap, enable: true)
+    }
+
+    private func runEventTapThread(identifier: UUID) {
+        autoreleasepool {
+            let currentRunLoop = CFRunLoopGetCurrent()
+
+            eventTapStateLock.lock()
+            eventTapRunLoop = currentRunLoop
+            let shouldStopBeforeStarting = shouldStopEventTapThread
+            eventTapStateLock.unlock()
+
+            if shouldStopBeforeStarting {
+                eventTapStateLock.lock()
+                if eventTapThreadIdentifier == identifier {
+                    eventTapRunLoop = nil
+                    eventTapThread = nil
+                    eventTapThreadIdentifier = nil
+                    shouldStopEventTapThread = false
+                }
+                eventTapStateLock.unlock()
+                return
+            }
+
+            print("🔬 EventTap: dedicated thread started")
+            createEventTapOnCurrentRunLoop()
+            CFRunLoopRun()
+            tearDownEventTapOnCurrentRunLoop()
+            updatePublishedShortcutPressedState(false)
+
+            eventTapStateLock.lock()
+            if eventTapThreadIdentifier == identifier {
+                eventTapRunLoop = nil
+                eventTapThread = nil
+                eventTapThreadIdentifier = nil
+                shouldStopEventTapThread = false
+            }
+            eventTapThreadIsShortcutCurrentlyPressed = false
+            consecutiveDisabledEventCount = 0
+            eventTapStateLock.unlock()
+
+            print("🔬 EventTap: dedicated thread stopped")
+        }
+    }
+
+    private func createEventTapOnCurrentRunLoop() {
+        print("🔬 EventTap: creating event tap on dedicated thread")
 
         let monitoredEventTypes: [CGEventType] = [.flagsChanged, .keyDown, .keyUp]
         let eventMask = monitoredEventTypes.reduce(CGEventMask(0)) { currentMask, eventType in
@@ -80,49 +192,68 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
             return
         }
 
+        eventTapStateLock.lock()
         self.globalEventTap = globalEventTap
         self.globalEventTapRunLoopSource = globalEventTapRunLoopSource
+        consecutiveDisabledEventCount = 0
+        eventTapThreadIsShortcutCurrentlyPressed = false
+        eventTapStateLock.unlock()
 
-        CFRunLoopAddSource(CFRunLoopGetMain(), globalEventTapRunLoopSource, .commonModes)
+        CFRunLoopAddSource(CFRunLoopGetCurrent(), globalEventTapRunLoopSource, .commonModes)
         CGEvent.tapEnable(tap: globalEventTap, enable: true)
-        print("🔬 EventTap: created ✓ | runLoopSource attached ✓ | tap enabled ✓")
+        print("🔬 EventTap: created ✓ | dedicated runLoopSource attached ✓ | tap enabled ✓")
     }
 
-    func stop() {
-        isShortcutCurrentlyPressed = false
+    private func tearDownEventTapOnCurrentRunLoop() {
+        eventTapStateLock.lock()
+        let runLoopSourceToRemove = globalEventTapRunLoopSource
+        let eventTapToInvalidate = globalEventTap
+        globalEventTapRunLoopSource = nil
+        globalEventTap = nil
+        eventTapThreadIsShortcutCurrentlyPressed = false
+        consecutiveDisabledEventCount = 0
+        eventTapStateLock.unlock()
 
-        if let globalEventTapRunLoopSource {
-            CFRunLoopRemoveSource(CFRunLoopGetMain(), globalEventTapRunLoopSource, .commonModes)
-            self.globalEventTapRunLoopSource = nil
+        if let runLoopSourceToRemove {
+            CFRunLoopRemoveSource(CFRunLoopGetCurrent(), runLoopSourceToRemove, .commonModes)
         }
 
-        if let globalEventTap {
-            CFMachPortInvalidate(globalEventTap)
-            self.globalEventTap = nil
+        if let eventTapToInvalidate {
+            CGEvent.tapEnable(tap: eventTapToInvalidate, enable: false)
+            CFMachPortInvalidate(eventTapToInvalidate)
         }
     }
 
-    func refreshEventTap() {
-        isShortcutCurrentlyPressed = false
+    private func recreateEventTapOnEventTapThread() {
+        print("⌨️ Push-to-talk event tap disabled repeatedly; recreating")
+        tearDownEventTapOnCurrentRunLoop()
+        createEventTapOnCurrentRunLoop()
+    }
 
-        guard let globalEventTap else {
-            start()
+    private func updatePublishedShortcutPressedState(_ isPressed: Bool) {
+        if Thread.isMainThread {
+            self.isShortcutCurrentlyPressed = isPressed
             return
         }
 
-        CGEvent.tapEnable(tap: globalEventTap, enable: true)
+        DispatchQueue.main.async { [weak self] in
+            self?.isShortcutCurrentlyPressed = isPressed
+        }
     }
 
     private func handleGlobalEventTap(
         eventType: CGEventType,
         event: CGEvent
     ) -> Unmanaged<CGEvent>? {
-        print("⌨️ Push-to-talk raw event: type=\(eventType.rawValue); modifiersRaw=\(event.flags.rawValue); storedPressed=\(isShortcutCurrentlyPressed)")
+        print("⌨️ Push-to-talk raw event: type=\(eventType.rawValue); modifiersRaw=\(event.flags.rawValue); storedPressed=\(eventTapThreadIsShortcutCurrentlyPressed)")
 
         if eventType == .tapDisabledByTimeout || eventType == .tapDisabledByUserInput {
-            print("⌨️ Push-to-talk event tap disabled; re-enabling")
-            refreshEventTap()
+            recoverEventTapAfterDisable()
             return Unmanaged.passUnretained(event)
+        }
+
+        if eventType == .flagsChanged {
+            consecutiveDisabledEventCount = 0
         }
 
         let eventKeyCode = UInt16(event.getIntegerValueField(.keyboardEventKeycode))
@@ -142,20 +273,16 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
             for: eventType,
             keyCode: eventKeyCode,
             modifierFlagsRawValue: event.flags.rawValue,
-            wasShortcutPreviouslyPressed: isShortcutCurrentlyPressed
+            wasShortcutPreviouslyPressed: eventTapThreadIsShortcutCurrentlyPressed
         )
 
         switch shortcutTransition {
         case .none:
             break
         case .pressed:
-            isShortcutCurrentlyPressed = true
-            print("⌨️ Push-to-talk monitor emitted pressed; modifiersRaw=\(event.flags.rawValue)")
-            shortcutTransitionPublisher.send(.pressed)
+            publishShortcutTransition(.pressed, shortcutIsCurrentlyPressed: true, modifierFlagsRawValue: event.flags.rawValue)
         case .released:
-            isShortcutCurrentlyPressed = false
-            print("⌨️ Push-to-talk monitor emitted released; modifiersRaw=\(event.flags.rawValue)")
-            shortcutTransitionPublisher.send(.released)
+            publishShortcutTransition(.released, shortcutIsCurrentlyPressed: false, modifierFlagsRawValue: event.flags.rawValue)
         }
 
         return Unmanaged.passUnretained(event)
@@ -195,20 +322,53 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
         shortcutIsCurrentlyPressed: Bool,
         modifierFlagsRawValue: UInt64
     ) {
-        if shortcutIsCurrentlyPressed && !isShortcutCurrentlyPressed {
-            isShortcutCurrentlyPressed = true
-            print("⌨️ Push-to-talk monitor emitted pressed; modifiersRaw=\(modifierFlagsRawValue)")
-            shortcutTransitionPublisher.send(.pressed)
+        if shortcutIsCurrentlyPressed && !eventTapThreadIsShortcutCurrentlyPressed {
+            publishShortcutTransition(.pressed, shortcutIsCurrentlyPressed: true, modifierFlagsRawValue: modifierFlagsRawValue)
             return
         }
 
-        if !shortcutIsCurrentlyPressed && isShortcutCurrentlyPressed {
-            isShortcutCurrentlyPressed = false
-            print("⌨️ Push-to-talk monitor emitted released; modifiersRaw=\(modifierFlagsRawValue)")
-            shortcutTransitionPublisher.send(.released)
+        if !shortcutIsCurrentlyPressed && eventTapThreadIsShortcutCurrentlyPressed {
+            publishShortcutTransition(.released, shortcutIsCurrentlyPressed: false, modifierFlagsRawValue: modifierFlagsRawValue)
             return
         }
 
-        isShortcutCurrentlyPressed = shortcutIsCurrentlyPressed
+        eventTapThreadIsShortcutCurrentlyPressed = shortcutIsCurrentlyPressed
+    }
+
+    private func publishShortcutTransition(
+        _ shortcutTransition: BuddyPushToTalkShortcut.ShortcutTransition,
+        shortcutIsCurrentlyPressed: Bool,
+        modifierFlagsRawValue: UInt64
+    ) {
+        eventTapThreadIsShortcutCurrentlyPressed = shortcutIsCurrentlyPressed
+        let transitionDescription: String
+        switch shortcutTransition {
+        case .none:
+            transitionDescription = "none"
+        case .pressed:
+            transitionDescription = "pressed"
+        case .released:
+            transitionDescription = "released"
+        }
+        print("⌨️ Push-to-talk monitor emitted \(transitionDescription); modifiersRaw=\(modifierFlagsRawValue)")
+
+        DispatchQueue.main.async { [weak self] in
+            self?.isShortcutCurrentlyPressed = shortcutIsCurrentlyPressed
+            self?.shortcutTransitionPublisher.send(shortcutTransition)
+        }
+    }
+
+    private func recoverEventTapAfterDisable() {
+        consecutiveDisabledEventCount += 1
+        eventTapThreadIsShortcutCurrentlyPressed = false
+        updatePublishedShortcutPressedState(false)
+
+        if consecutiveDisabledEventCount == 1, let globalEventTap, CFMachPortIsValid(globalEventTap) {
+            print("⌨️ Push-to-talk event tap disabled; re-enabling")
+            CGEvent.tapEnable(tap: globalEventTap, enable: true)
+            return
+        }
+
+        recreateEventTapOnEventTapThread()
     }
 }

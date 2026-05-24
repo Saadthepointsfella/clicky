@@ -107,11 +107,16 @@ final class MenuBarPanelManager: NSObject {
         return image
     }
 
-    /// Opens the panel automatically on app launch so the user sees
-    /// permissions and the start button right away.
+    /// Opens the panel automatically on app launch only when the user still
+    /// needs onboarding or permissions. Returning users should stay in the
+    /// menu bar so the startup panel does not interfere with push-to-talk.
     func showPanelOnLaunch() {
         // Small delay so the status item has time to appear in the menu bar
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+            guard !self.companionManager.hasCompletedOnboarding || !self.companionManager.allPermissionsGranted else {
+                return
+            }
+
             self.showPanel()
         }
     }
