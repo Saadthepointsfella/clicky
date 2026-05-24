@@ -89,6 +89,7 @@ final class CompanionManager: ObservableObject {
     /// The currently running AI response task, if any. Cancelled when the user
     /// speaks again so a new response can begin immediately.
     private var currentResponseTask: Task<Void, Never>?
+    private var currentResponseTaskIdentifier: UUID?
 
     private var shortcutTransitionCancellable: AnyCancellable?
     private var voiceStateCancellable: AnyCancellable?
@@ -508,6 +509,9 @@ final class CompanionManager: ObservableObject {
 
             // Cancel any in-progress response and TTS from a previous utterance
             currentResponseTask?.cancel()
+            currentResponseTask = nil
+            currentResponseTaskIdentifier = nil
+            voiceState = .idle
             elevenLabsTTSClient.stopPlayback()
             clearDetectedElementLocation()
 
@@ -600,9 +604,19 @@ final class CompanionManager: ObservableObject {
     /// the buddy to fly to that element on screen.
     private func sendTranscriptToClaudeWithScreenshot(transcript: String) {
         currentResponseTask?.cancel()
+        currentResponseTaskIdentifier = nil
         elevenLabsTTSClient.stopPlayback()
 
+        let responseTaskIdentifier = UUID()
+        currentResponseTaskIdentifier = responseTaskIdentifier
         currentResponseTask = Task {
+            defer {
+                if currentResponseTaskIdentifier == responseTaskIdentifier {
+                    currentResponseTask = nil
+                    currentResponseTaskIdentifier = nil
+                }
+            }
+
             // Stay in processing (spinner) state — no streaming text displayed
             voiceState = .processing
 

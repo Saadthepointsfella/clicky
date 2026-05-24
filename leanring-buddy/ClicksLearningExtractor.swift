@@ -48,7 +48,7 @@ struct ClicksLearningExtractor {
                 completedExchange: completedExchange
             )
         } catch {
-            print("⚠️ Clicks extraction skipped: \(error.localizedDescription)")
+            print("⚠️ Clicks extraction failed; falling back to deterministic memory.")
             return nil
         }
     }

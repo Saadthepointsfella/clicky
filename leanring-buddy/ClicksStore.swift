@@ -8,6 +8,8 @@
 import Foundation
 
 struct ClicksStore {
+    private static let appendQueue = DispatchQueue(label: "com.clicky.clicks-store.append")
+
     private let fileManager: FileManager
     private let graphFileURL: URL
 
@@ -60,8 +62,10 @@ struct ClicksStore {
     }
 
     func appendNode(_ node: ClicksLearningNode) throws {
-        var graph = loadGraph()
-        graph.nodes.append(node)
-        try saveGraph(graph)
+        try Self.appendQueue.sync {
+            var graph = loadGraph()
+            graph.nodes.append(node)
+            try saveGraph(graph)
+        }
     }
 }
