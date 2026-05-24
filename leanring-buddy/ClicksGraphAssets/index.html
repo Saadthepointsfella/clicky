@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html class="light" lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>clicks - knowledge graph</title>
+<link href="./clicks-graph.css" rel="stylesheet"/>
+<script src="./vendor/cytoscape.min.js"></script>
+</head>
+<body class="font-body-md antialiased relative h-screen w-screen">
+
+<!-- axis field labels -->
+<div class="axis-bg" style="top:14%; left:24%; color:rgba(91,110,140,.16)">thinking</div>
+<div class="axis-bg" style="top:14%; right:18%; color:rgba(122,148,104,.18)">designing</div>
+<div class="axis-bg" style="bottom:14%; left:50%; transform:translateX(-50%); color:rgba(192,138,62,.16)">doing</div>
+
+<div id="cy"></div>
+<div class="absolute inset-0 z-10 overflow-hidden pointer-events-none">
+  <div id="node-overlays"></div>
+</div>
+
+<!-- UI overlay -->
+<div class="absolute inset-0 p-8 pointer-events-none flex z-20">
+  <aside class="w-72 flex flex-col gap-8 h-full pointer-events-auto">
+    <header>
+      <h1 class="font-headline-lg text-6xl leading-none tracking-tight mb-1">clicks</h1>
+      <h2 class="font-headline-md text-xl text-tertiary">here's what stuck</h2>
+      <p class="text-sm text-on-surface-variant mt-3 leading-relaxed">your learnings, placed by intent and linked where they share a topic.</p>
+      <div class="mt-5">
+        <input id="search" class="w-full bg-white-50 border border-outline-20 rounded-sm px-3 py-2 text-sm focus-outline-none focus-border-tertiary placeholder-outline-variant-70" placeholder="search learnings..." type="text"/>
+      </div>
+      <section class="mt-7">
+        <div class="flex flex-col gap-3-5" id="axes"></div>
+      </section>
+      <section class="mt-7">
+        <div class="font-pixel text-sm text-outline tracking-wider mb-2">SOURCES</div>
+        <div class="flex flex-wrap gap-1-5" id="src-chips"></div>
+      </section>
+    </header>
+    <div class="mt-auto retro-window w-full">
+      <div class="retro-title-bar"><span>LEGEND.SYS</span><span class="icon-text">x</span></div>
+      <div class="p-3 flex flex-col gap-2 bg-retro">
+        <div class="flex items-center gap-3"><div class="w-6 border-b border-black"></div><span class="font-pixel text-xs">RELATED</span></div>
+        <div class="flex items-center gap-3"><span class="font-pixel text-xs text-muted">click a link to see why</span></div>
+      </div>
+    </div>
+  </aside>
+
+  <div class="absolute top-8 right-8 pointer-events-auto">
+    <div class="retro-window">
+      <div class="retro-title-bar"><span>CONTROLS</span><div class="title-box"></div></div>
+      <div class="p-1 grid grid-cols-2 gap-1 bg-retro">
+        <button class="retro-button w-8 h-8" id="zoom-in"><span class="icon-text">+</span></button>
+        <button class="retro-button w-8 h-8" id="zoom-out"><span class="icon-text">-</span></button>
+        <button class="retro-button w-8 h-8" id="fit"><span class="icon-text">[]</span></button>
+        <button class="retro-button w-8 h-8"><span class="icon-text">=</span></button>
+      </div>
+      <button class="retro-button seed-button" id="seed-demo-graph">LOAD DEMO GRAPH</button>
+    </div>
+  </div>
+</div>
+
+<div id="empty-state" class="fixed-center z-30 hidden pointer-events-none">
+  <div class="index-card empty-card p-5 rounded-sm">
+    <span class="font-pixel text-10 tracking-widest uppercase empty-kicker">LOCAL MEMORY</span>
+    <h3 class="font-headline-md text-xl text-on-surface card-ruled-line pb-1-5 leading-snug">nothing stuck yet</h3>
+    <p class="font-body-md text-sm text-on-surface-variant leading-relaxed">Enable Clicks and complete useful conversations. Your saved learnings will appear here.</p>
+  </div>
+</div>
+
+<div id="toast" class="fixed bottom-6 left-1-2 -translate-x-1-2 z-30 toast opacity-0 transition-opacity pointer-events-none font-body-md"></div>
+
+<script src="./clicks-graph.js"></script>
+</body>
+</html>

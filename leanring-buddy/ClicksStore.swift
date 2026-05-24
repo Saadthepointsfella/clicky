@@ -61,11 +61,30 @@ struct ClicksStore {
         try data.write(to: graphFileURL, options: [.atomic])
     }
 
+    func replaceGraph(_ graph: ClicksMemoryGraph) throws {
+        try Self.appendQueue.sync {
+            try saveGraph(graph)
+        }
+    }
+
     func appendNode(_ node: ClicksLearningNode) throws {
         try Self.appendQueue.sync {
             var graph = loadGraph()
             graph.nodes.append(node)
             try saveGraph(graph)
+        }
+    }
+
+    func replaceEdges(_ edges: [ClicksLearningEdge]) throws -> Bool {
+        try Self.appendQueue.sync {
+            var graph = loadGraph()
+            guard graph.nodes.count >= 2 else {
+                return false
+            }
+
+            graph.edges = edges
+            try saveGraph(graph)
+            return true
         }
     }
 

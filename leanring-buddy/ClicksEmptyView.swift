@@ -10,13 +10,21 @@ import SwiftUI
 struct ClicksEmptyView: View {
     let clicksStore: ClicksStore
     let clicksLearningExtractor: ClicksLearningExtractor
+    let clicksEdgeGenerator: ClicksEdgeGenerator
     @State private var graph: ClicksMemoryGraph
     @State private var isImprovingLatestClick = false
     @State private var improveLatestClickStatus: String?
+    @State private var isRebuildingLinks = false
+    @State private var rebuildLinksStatus: String?
 
-    init(clicksStore: ClicksStore, clicksLearningExtractor: ClicksLearningExtractor) {
+    init(
+        clicksStore: ClicksStore,
+        clicksLearningExtractor: ClicksLearningExtractor,
+        clicksEdgeGenerator: ClicksEdgeGenerator
+    ) {
         self.clicksStore = clicksStore
         self.clicksLearningExtractor = clicksLearningExtractor
+        self.clicksEdgeGenerator = clicksEdgeGenerator
         self._graph = State(initialValue: clicksStore.loadGraph())
     }
 
@@ -66,6 +74,25 @@ struct ClicksEmptyView: View {
             Spacer()
 
             if !graph.nodes.isEmpty {
+                Button(action: rebuildLinks) {
+                    Text(isRebuildingLinks ? "Rebuilding links..." : "Rebuild links")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(isRebuildingLinks ? Self.inkFaint : Self.inkSoft)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 7)
+                        .background(
+                            Capsule()
+                                .fill(Self.card)
+                        )
+                        .overlay(
+                            Capsule()
+                                .stroke(Self.cardEdge, lineWidth: 1)
+                        )
+                }
+                .buttonStyle(.plain)
+                .disabled(isRebuildingLinks)
+                .pointerCursor()
+
                 Button(action: improveLatestClick) {
                     Text(isImprovingLatestClick ? "Improving..." : "Improve latest Click")
                         .font(.system(size: 12, weight: .semibold))
@@ -105,8 +132,8 @@ struct ClicksEmptyView: View {
             .pointerCursor()
         }
         .overlay(alignment: .bottomTrailing) {
-            if let improveLatestClickStatus {
-                Text(improveLatestClickStatus)
+            if let statusText = rebuildLinksStatus ?? improveLatestClickStatus {
+                Text(statusText)
                     .font(.system(size: 11, weight: .medium))
                     .foregroundColor(Self.inkFaint)
                     .offset(y: 20)
@@ -154,6 +181,60 @@ struct ClicksEmptyView: View {
 
     private func refreshGraph() {
         graph = clicksStore.loadGraph()
+    }
+
+    private func rebuildLinks() {
+        guard !isRebuildingLinks else { return }
+
+        let currentGraph = clicksStore.loadGraph()
+        graph = currentGraph
+        improveLatestClickStatus = nil
+
+        guard currentGraph.nodes.count >= 2 else {
+            rebuildLinksStatus = "No strong links found"
+            return
+        }
+
+        isRebuildingLinks = true
+        rebuildLinksStatus = "Rebuilding links..."
+
+        Task {
+            let result = await clicksEdgeGenerator.generateRelatedEdges(for: currentGraph)
+
+            guard !result.didFail else {
+                await MainActor.run {
+                    rebuildLinksStatus = "Could not rebuild links"
+                    isRebuildingLinks = false
+                }
+                return
+            }
+
+            guard result.shouldReplaceEdges else {
+                await MainActor.run {
+                    rebuildLinksStatus = "No strong links found"
+                    isRebuildingLinks = false
+                }
+                return
+            }
+
+            do {
+                let didReplaceEdges = try clicksStore.replaceEdges(result.edges)
+                await MainActor.run {
+                    if didReplaceEdges {
+                        refreshGraph()
+                        rebuildLinksStatus = result.edges.isEmpty ? "No strong links found" : "Links rebuilt"
+                    } else {
+                        rebuildLinksStatus = "Could not rebuild links"
+                    }
+                    isRebuildingLinks = false
+                }
+            } catch {
+                await MainActor.run {
+                    rebuildLinksStatus = "Could not rebuild links"
+                    isRebuildingLinks = false
+                }
+            }
+        }
     }
 
     private func improveLatestClick() {
