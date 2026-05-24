@@ -37,6 +37,12 @@ struct CompanionPanelView: View {
 
                 clicksToggleRow
                     .padding(.horizontal, 16)
+
+                Spacer()
+                    .frame(height: 8)
+
+                openClicksButton
+                    .padding(.horizontal, 16)
             }
 
             if !companionManager.allPermissionsGranted {
@@ -635,6 +641,39 @@ struct CompanionPanelView: View {
             .scaleEffect(0.8)
         }
         .padding(.vertical, 4)
+    }
+
+    private var openClicksButton: some View {
+        Button(action: {
+            companionManager.openClicksWindow()
+        }) {
+            HStack(spacing: 8) {
+                Image(systemName: "point.3.filled.connected.trianglepath.dotted")
+                    .font(.system(size: 12, weight: .medium))
+
+                Text("Open Clicks")
+                    .font(.system(size: 12, weight: .semibold))
+
+                Spacer()
+
+                Image(systemName: "arrow.up.forward")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundColor(DS.Colors.textTertiary)
+            }
+            .foregroundColor(DS.Colors.textSecondary)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 9)
+            .background(
+                RoundedRectangle(cornerRadius: DS.CornerRadius.medium, style: .continuous)
+                    .fill(Color.white.opacity(0.06))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: DS.CornerRadius.medium, style: .continuous)
+                    .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
+            )
+        }
+        .buttonStyle(.plain)
+        .pointerCursor()
     }
 
     // MARK: - Model Picker

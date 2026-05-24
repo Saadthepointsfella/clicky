@@ -66,6 +66,7 @@ final class CompanionManager: ObservableObject {
     let globalPushToTalkShortcutMonitor = GlobalPushToTalkShortcutMonitor()
     let overlayWindowManager = OverlayWindowManager()
     let responseOverlayManager = CompanionResponseOverlayManager()
+    private let clicksGraphWindowManager = ClicksGraphWindowManager()
 
     /// Base URL for the Cloudflare Worker proxy. All API requests route
     /// through this so keys never ship in the app binary.
@@ -144,6 +145,10 @@ final class CompanionManager: ObservableObject {
     func setClicksEnabled(_ enabled: Bool) {
         isClicksEnabled = enabled
         UserDefaults.standard.set(enabled, forKey: "isClicksEnabled")
+    }
+
+    func openClicksWindow() {
+        clicksGraphWindowManager.showWindow()
     }
 
     /// Whether the user has completed onboarding at least once. Persisted
