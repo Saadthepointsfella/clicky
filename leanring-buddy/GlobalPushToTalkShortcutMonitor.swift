@@ -32,7 +32,11 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
         // Restarting resets isShortcutCurrentlyPressed, which would kill
         // the waveform overlay mid-press when the permission poller calls
         // refreshAllPermissions → start() every few seconds.
-        guard globalEventTap == nil else { return }
+        guard globalEventTap == nil else {
+            print("🔬 EventTap: start() called but tap already exists — skipping")
+            return
+        }
+        print("🔬 EventTap: start() creating new event tap")
 
         let monitoredEventTypes: [CGEventType] = [.flagsChanged, .keyDown, .keyUp]
         let eventMask = monitoredEventTypes.reduce(CGEventMask(0)) { currentMask, eventType in
@@ -81,6 +85,7 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
 
         CFRunLoopAddSource(CFRunLoopGetMain(), globalEventTapRunLoopSource, .commonModes)
         CGEvent.tapEnable(tap: globalEventTap, enable: true)
+        print("🔬 EventTap: created ✓ | runLoopSource attached ✓ | tap enabled ✓")
     }
 
     func stop() {

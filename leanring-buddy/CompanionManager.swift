@@ -194,11 +194,12 @@ final class CompanionManager: ObservableObject {
 
     func start() {
         refreshAllPermissions()
-        print("🔑 Clicky start — accessibility: \(hasAccessibilityPermission), screen: \(hasScreenRecordingPermission), mic: \(hasMicrophonePermission), screenContent: \(hasScreenContentPermission), onboarded: \(hasCompletedOnboarding)")
+        printLaunchDiagnostics()
         startPermissionPolling()
         bindVoiceStateObservation()
         bindAudioPowerLevel()
         bindShortcutTransitions()
+        globalPushToTalkShortcutMonitor.start()
         // Eagerly touch the Claude API so its TLS warmup handshake completes
         // well before the onboarding demo fires at ~40s into the video.
         _ = claudeAPI
@@ -491,12 +492,60 @@ final class CompanionManager: ObservableObject {
             }
     }
 
+    private func printLaunchDiagnostics() {
+        let bundleId = Bundle.main.bundleIdentifier ?? "unknown"
+        let appVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?"
+        let buildNumber = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "?"
+        let pid = ProcessInfo.processInfo.processIdentifier
+        let workerHost = URL(string: Self.workerBaseURL)?.host ?? "unknown"
+
+        print("""
+        ┌─────────────────────────────────────────────────
+        │ 🔬 CLICKY LAUNCH DIAGNOSTICS
+        │ pid: \(pid)
+        │ bundle: \(bundleId)
+        │ version: \(appVersion) (\(buildNumber))
+        │ date: \(ISO8601DateFormatter().string(from: Date()))
+        │ worker: \(workerHost)
+        │
+        │ PERMISSIONS
+        │ accessibility: \(hasAccessibilityPermission)
+        │ screenRecording: \(hasScreenRecordingPermission)
+        │ microphone: \(hasMicrophonePermission)
+        │ screenContent: \(hasScreenContentPermission)
+        │ onboarded: \(hasCompletedOnboarding)
+        │
+        │ CLICKS STATE
+        │ isClicksEnabled: \(isClicksEnabled)
+        │ clicksEnabled (UserDefaults raw): \(UserDefaults.standard.bool(forKey: "isClicksEnabled"))
+        │
+        │ VOICE/DICTATION STATE
+        │ voiceState: \(voiceState)
+        │ isDictationInProgress: \(buddyDictationManager.isDictationInProgress)
+        │ currentResponseTask: \(currentResponseTask != nil ? "active" : "nil")
+        │ currentResponseTaskIdentifier: \(currentResponseTaskIdentifier?.uuidString ?? "nil")
+        │
+        │ OVERLAY STATE
+        │ isOverlayVisible: \(isOverlayVisible)
+        │ isClickyCursorEnabled: \(isClickyCursorEnabled)
+        └─────────────────────────────────────────────────
+        """)
+    }
+
     private func handleShortcutTransition(_ transition: BuddyPushToTalkShortcut.ShortcutTransition) {
+        print("⌨️ CM shortcut transition: \(transition) | voiceState=\(voiceState) dictating=\(buddyDictationManager.isDictationInProgress) onboarding=\(showOnboardingVideo) responseTask=\(currentResponseTask != nil)")
+
         switch transition {
         case .pressed:
-            guard !buddyDictationManager.isDictationInProgress else { return }
+            guard !buddyDictationManager.isDictationInProgress else {
+                print("⌨️ CM shortcut REJECTED: dictation in progress")
+                return
+            }
             // Don't register push-to-talk while the onboarding video is playing
-            guard !showOnboardingVideo else { return }
+            guard !showOnboardingVideo else {
+                print("⌨️ CM shortcut REJECTED: onboarding video showing")
+                return
+            }
 
             // Cancel any pending transient hide so the overlay stays visible
             transientHideTask?.cancel()

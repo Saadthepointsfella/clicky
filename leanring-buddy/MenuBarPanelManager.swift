@@ -127,6 +127,7 @@ final class MenuBarPanelManager: NSObject {
     // MARK: - Panel Lifecycle
 
     private func showPanel() {
+        print("🔬 Panel: showPanel()")
         if panel == nil {
             createPanel()
         }
@@ -139,6 +140,7 @@ final class MenuBarPanelManager: NSObject {
     }
 
     private func hidePanel() {
+        print("🔬 Panel: hidePanel()")
         panel?.orderOut(nil)
         removeClickOutsideMonitor()
     }
