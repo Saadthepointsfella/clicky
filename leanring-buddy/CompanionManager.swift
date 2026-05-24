@@ -90,6 +90,7 @@ final class CompanionManager: ObservableObject {
     /// speaks again so a new response can begin immediately.
     private var currentResponseTask: Task<Void, Never>?
     private var currentResponseTaskIdentifier: UUID?
+    private var intentionallyCancelledResponseTaskIdentifiers = Set<UUID>()
 
     private var shortcutTransitionCancellable: AnyCancellable?
     private var voiceStateCancellable: AnyCancellable?
@@ -508,6 +509,9 @@ final class CompanionManager: ObservableObject {
             NotificationCenter.default.post(name: .clickyDismissPanel, object: nil)
 
             // Cancel any in-progress response and TTS from a previous utterance
+            if let currentResponseTaskIdentifier {
+                intentionallyCancelledResponseTaskIdentifiers.insert(currentResponseTaskIdentifier)
+            }
             currentResponseTask?.cancel()
             currentResponseTask = nil
             currentResponseTaskIdentifier = nil
@@ -611,6 +615,8 @@ final class CompanionManager: ObservableObject {
         currentResponseTaskIdentifier = responseTaskIdentifier
         currentResponseTask = Task {
             defer {
+                intentionallyCancelledResponseTaskIdentifiers.remove(responseTaskIdentifier)
+
                 if currentResponseTaskIdentifier == responseTaskIdentifier {
                     currentResponseTask = nil
                     currentResponseTaskIdentifier = nil
@@ -739,6 +745,11 @@ final class CompanionManager: ObservableObject {
             } catch is CancellationError {
                 // User spoke again — response was interrupted
             } catch {
+                if Self.isCancelledURLSessionError(error),
+                   intentionallyCancelledResponseTaskIdentifiers.contains(responseTaskIdentifier) {
+                    return
+                }
+
                 ClickyAnalytics.trackResponseError(error: error.localizedDescription)
                 print("⚠️ Companion response error: \(error)")
             }
@@ -748,6 +759,11 @@ final class CompanionManager: ObservableObject {
                 scheduleTransientHideIfNeeded()
             }
         }
+    }
+
+    private static func isCancelledURLSessionError(_ error: Error) -> Bool {
+        let nsError = error as NSError
+        return nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled
     }
 
     private func saveDeterministicClickIfNeeded(

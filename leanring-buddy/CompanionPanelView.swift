@@ -633,7 +633,10 @@ struct CompanionPanelView: View {
 
             Toggle("", isOn: Binding(
                 get: { companionManager.isClicksEnabled },
-                set: { companionManager.setClicksEnabled($0) }
+                set: { newValue in
+                    companionManager.setClicksEnabled(newValue)
+                    NotificationCenter.default.post(name: .clickyDismissPanel, object: nil)
+                }
             ))
             .toggleStyle(.switch)
             .labelsHidden()
